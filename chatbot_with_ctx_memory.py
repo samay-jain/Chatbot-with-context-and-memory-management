@@ -1,9 +1,9 @@
 import json
-import requests
-from typing import Dict, List
 import logging
 from datetime import datetime
 import uuid
+from typing import Dict, List
+from openai import OpenAI  # OpenAI SDK for Ollama-compatible interaction
 
 def setup_logging():
     """
@@ -32,11 +32,18 @@ class ChatBot:
     def __init__(self):
         """
         Initialize the chatbot with a new session ID, logging setup, model name, and initial messages.
+        Connect to a locally running Ollama instance via OpenAI-compatible interface.
         """
         self.logger = setup_logging()
         self.session_id = str(uuid.uuid4())
-        self.model_name = "llama3.2"
+        self.model_name = "llama3.2"  # Make sure this matches the model available in Ollama
         self.messages = self.create_initial_messages()
+        
+        # Set up OpenAI client to talk to local Ollama instance
+        self.client = OpenAI(
+            base_url="http://localhost:11434/v1",  # Ollama OpenAI-compatible endpoint
+            api_key="ollama"  # Dummy key, Ollama doesn't enforce auth by default
+        )
 
     @staticmethod
     def create_initial_messages() -> List[Dict[str, str]]:
@@ -69,66 +76,37 @@ class ChatBot:
             # Add user message to history
             self.messages.append({"role": "user", "content": user_input})
 
-            # Prepare the request payload
-            payload = {
-                "model": self.model_name,
-                "messages": self.messages
-            }
-
-            # Make the POST request to the local API and time the request
+            # Send messages to the model using OpenAI client
             start_time = datetime.now()
-            response = requests.post("http://localhost:11434/api/chat", json=payload, stream=True)
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=self.messages,
+                stream=False  # Set to True for streaming (requires streaming logic)
+            )
             end_time = datetime.now()
             response_time = (end_time - start_time).total_seconds()
 
-            # Check if the request was successful
-            if response.status_code == 200:
-                full_response = ""
+            # Extract content from the first choice
+            full_response = response.choices[0].message.content.strip()
 
-                # Parse each line in the streaming response
-                for line in response.iter_lines(decode_unicode=True):
-                    if line:
-                        try:
-                            json_data = json.loads(line)
-                            if "message" in json_data and "content" in json_data["message"]:
-                                full_response += json_data["message"]["content"]
-                        except json.JSONDecodeError:
-                            print(f"\nFailed to parse line: {line}")
-
-                # Log the assistant's response
-                log_entry = {
-                    "timestamp": datetime.now().isoformat(),
-                    "level": "INFO",
-                    "type": "model_response",
-                    "response_content": full_response,
-                    "metadata": {
-                        "session_id": self.session_id,
-                        "model": self.model_name,
-                        "response_time": response_time,
-                        "tokens_used": None  # Placeholder
-                    }
+            # Log the assistant's response
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "level": "INFO",
+                "type": "model_response",
+                "response_content": full_response,
+                "metadata": {
+                    "session_id": self.session_id,
+                    "model": self.model_name,
+                    "response_time": response_time,
+                    "tokens_used": getattr(response.usage, "total_tokens", None)
                 }
-                self.logger.info(json.dumps(log_entry))
+            }
+            self.logger.info(json.dumps(log_entry))
 
-                # Append the assistant's response to conversation history
-                self.messages.append({"role": "assistant", "content": full_response})
-                return full_response
-
-            else:
-                # Log API error response (non-200)
-                error_entry = {
-                    "timestamp": datetime.now().isoformat(),
-                    "level": "ERROR",
-                    "type": "http_error",
-                    "error_message": response.text,
-                    "metadata": {
-                        "session_id": self.session_id,
-                        "model": self.model_name,
-                        "status_code": response.status_code
-                    }
-                }
-                self.logger.error(json.dumps(error_entry))
-                return f"Error: {response.status_code} - {response.text}"
+            # Append the assistant's response to conversation history
+            self.messages.append({"role": "assistant", "content": full_response})
+            return full_response
 
         except Exception as e:
             # Catch-all error logging for exceptions (e.g., connection issues)
@@ -225,6 +203,7 @@ def main():
         if len(chatbot.messages) > 10:
             chatbot.messages = chatbot.summarize_messages()
             print("\n(Conversation automatically summarized)")
+
 
 # Run chatbot in CLI
 if __name__ == "__main__":
